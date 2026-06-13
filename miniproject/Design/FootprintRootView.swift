@@ -1,6 +1,6 @@
 //
 //  FootprintRootView.swift
-//  miniproject
+//  Footprint
 //
 
 import SwiftUI

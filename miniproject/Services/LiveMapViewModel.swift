@@ -1,6 +1,6 @@
 //
 //  LiveMapViewModel.swift
-//  miniproject
+//  Footprint
 //
 
 import Combine
@@ -8,6 +8,21 @@ import CoreLocation
 import Foundation
 import MapKit
 import SwiftUI
+
+struct ChatDestination: Identifiable, Equatable {
+    let groupId: String
+    let peerUserId: String
+    let peerName: String
+
+    var id: String { "\(groupId):\(peerUserId)" }
+}
+
+struct ChatNotificationBanner: Equatable {
+    let messageId: String
+    let peerUserId: String
+    let peerName: String
+    let previewText: String
+}
 
 @MainActor
 final class LiveMapViewModel: ObservableObject {
@@ -19,7 +34,11 @@ final class LiveMapViewModel: ObservableObject {
     @Published var footprintSteps: [FootprintStep] = []
     @Published var isOnCampus = false
     @Published var campusEntryBanner: String?
+    @Published var chatNotificationBanner: ChatNotificationBanner?
+    @Published var activeChatDestination: ChatDestination?
     @Published var mapHeading: Double = 0
+    @Published private(set) var mapCameraRevision = 0
+    @Published private(set) var mapInteractionModes: MapInteractionModes = .zoom
     @Published private(set) var groupId: String
     @Published private(set) var joinedGroups: [JoinedGroupSummary] = []
     @Published private(set) var activeGroupName: String = ""
@@ -35,7 +54,9 @@ final class LiveMapViewModel: ObservableObject {
     private var syncTask: Task<Void, Never>?
     private var footprintExpiryTask: Task<Void, Never>?
     private var bannerTask: Task<Void, Never>?
-    private var didInitialCenter = false
+    private var chatBannerTask: Task<Void, Never>?
+    private var seenChatMessageIds: Set<String> = []
+    private var hasSeededChatInbox = false
     private let defaultSpan = FootprintConfig.campusBoundaryRegion.span
     private let footprintTrail = FootprintTrailStore()
     private var locationCancellable: AnyCancellable?
@@ -150,6 +171,8 @@ final class LiveMapViewModel: ObservableObject {
         footprintExpiryTask = nil
         bannerTask?.cancel()
         bannerTask = nil
+        chatBannerTask?.cancel()
+        chatBannerTask = nil
         locationCancellable?.cancel()
         locationCancellable = nil
         locationService.stop()
@@ -189,6 +212,7 @@ final class LiveMapViewModel: ObservableObject {
             peers = []
             peerPresence = [:]
             clearFootprints()
+            resetChatNotificationState()
         }
         rebuildGroupMembers()
         if groupChanged {
@@ -258,6 +282,51 @@ final class LiveMapViewModel: ObservableObject {
         return response.inviteCode
     }
 
+    func fetchChatMessages(groupId: String, withUserId peerUserId: String) async throws -> [ChatMessage] {
+        await autoConnectServer()
+        try await verifyServerConnection()
+        return try await api.fetchMessages(
+            groupId: groupId,
+            userId: userId,
+            withUserId: peerUserId
+        )
+    }
+
+    func sendChatMessage(groupId: String, toUserId peerUserId: String, text: String) async throws -> ChatMessage {
+        await autoConnectServer()
+        try await verifyServerConnection()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw FootprintAPIError.serverMessage("메시지를 입력해주세요.")
+        }
+        return try await api.sendMessage(
+            groupId: groupId,
+            fromUserId: userId,
+            toUserId: peerUserId,
+            text: trimmed
+        )
+    }
+
+    func openChat(peerUserId: String, peerName: String) {
+        guard !groupId.isEmpty, peerUserId != userId else { return }
+        chatNotificationBanner = nil
+        chatBannerTask?.cancel()
+        activeChatDestination = ChatDestination(
+            groupId: groupId,
+            peerUserId: peerUserId,
+            peerName: peerName
+        )
+    }
+
+    func openChatFromNotification() {
+        guard let banner = chatNotificationBanner else { return }
+        openChat(peerUserId: banner.peerUserId, peerName: banner.peerName)
+    }
+
+    func closeActiveChat() {
+        activeChatDestination = nil
+    }
+
     var onCampusPeers: [PeerLocation] {
         guard !groupId.isEmpty else { return [] }
         let memberIds = Set(groupMembers.map(\.id))
@@ -267,44 +336,80 @@ final class LiveMapViewModel: ObservableObject {
     }
 
     func recenterOnUser() {
-        guard let location = locationService.currentLocation else { return }
-        let span = lastKnownSpan ?? defaultSpan
-        let region = FootprintConfig.clampedMapRegion(
-            MKCoordinateRegion(center: location.coordinate, span: span)
-        )
+        let span = maxZoomOutSpan ?? lastKnownSpan ?? defaultSpan
         withAnimation(.easeInOut(duration: 0.35)) {
-            cameraPosition = .region(region)
+            cameraPosition = .region(
+                MKCoordinateRegion(center: FootprintConfig.campusCenter, span: span)
+            )
         }
+        mapCameraRevision &+= 1
+        mapInteractionModes = .zoom
     }
 
-    func updateSpanFromCamera(_ span: MKCoordinateSpan) {
-        lastKnownSpan = span
-    }
-
-    func applyCameraRegion(_ region: MKCoordinateRegion, heading: CLLocationDirection = 0) {
+    func trackMapCamera(heading: Double, region: MKCoordinateRegion) {
         mapHeading = heading
-        let clamped = FootprintConfig.clampedMapRegion(region)
-        lastKnownSpan = clamped.span
+        lastKnownSpan = region.span
+        mapCameraRevision &+= 1
 
-        let centerMoved = abs(clamped.center.latitude - region.center.latitude) > 0.000001
-            || abs(clamped.center.longitude - region.center.longitude) > 0.000001
-        let spanChanged = abs(clamped.span.latitudeDelta - region.span.latitudeDelta) > 0.000001
-            || abs(clamped.span.longitudeDelta - region.span.longitudeDelta) > 0.000001
-
-        if centerMoved || spanChanged {
-            cameraPosition = .region(clamped)
+        if let maxSpan = maxZoomOutSpan {
+            let zoomedIn = CampusCircleScreenGeometry.isZoomedIn(span: region.span, maxZoomOutSpan: maxSpan)
+            mapInteractionModes = zoomedIn ? [.zoom, .pan] : .zoom
         }
+    }
+
+    func lockCampusMapView(
+        _ region: MKCoordinateRegion,
+        viewportSize: CGSize,
+        proxy: MapProxy
+    ) {
+        guard viewportSize.width > 0, viewportSize.height > 0 else { return }
+
+        var span = region.span
+        let campusCenter = FootprintConfig.campusCenter
+
+        if let metrics = CampusCircleScreenGeometry.screenMetrics(proxy: proxy) {
+            let targetRadius = CampusCircleScreenGeometry.targetFillRadius(for: viewportSize)
+            if metrics.radius < targetRadius {
+                let scale = targetRadius / metrics.radius
+                span.latitudeDelta /= scale
+                span.longitudeDelta /= scale
+            }
+        }
+
+        if let maxSpan = maxZoomOutSpan {
+            span.latitudeDelta = min(span.latitudeDelta, maxSpan.latitudeDelta)
+            span.longitudeDelta = min(span.longitudeDelta, maxSpan.longitudeDelta)
+        } else {
+            maxZoomOutSpan = span
+        }
+
+        let zoomedIn = maxZoomOutSpan.map {
+            CampusCircleScreenGeometry.isZoomedIn(span: span, maxZoomOutSpan: $0)
+        } ?? false
+
+        mapInteractionModes = zoomedIn ? [.zoom, .pan] : .zoom
+
+        let center = zoomedIn
+            ? CampusCircleScreenGeometry.clampedPanCenter(region.center, span: span)
+            : campusCenter
+
+        let locked = MKCoordinateRegion(center: center, span: span)
+        let centerMoved =
+            abs(center.latitude - region.center.latitude) > 0.000001
+            || abs(center.longitude - region.center.longitude) > 0.000001
+        let spanChanged =
+            abs(span.latitudeDelta - region.span.latitudeDelta) > 0.000001
+            || abs(span.longitudeDelta - region.span.longitudeDelta) > 0.000001
+
+        guard centerMoved || spanChanged else { return }
+
+        lastKnownSpan = span
+        cameraPosition = .region(locked)
+        mapCameraRevision &+= 1
     }
 
     private var lastKnownSpan: MKCoordinateSpan?
-
-    private func centerOnUserIfNeeded(_ coordinate: CLLocationCoordinate2D) {
-        guard !didInitialCenter else { return }
-        didInitialCenter = true
-        cameraPosition = .region(
-            MKCoordinateRegion(center: coordinate, span: defaultSpan)
-        )
-    }
+    private var maxZoomOutSpan: MKCoordinateSpan?
 
     private func clearActiveGroupContext() {
         groupId = ""
@@ -314,6 +419,8 @@ final class LiveMapViewModel: ObservableObject {
         peers = []
         peerPresence = [:]
         registeredMembers = []
+        activeChatDestination = nil
+        resetChatNotificationState()
         rebuildGroupMembers()
     }
 
@@ -358,7 +465,6 @@ final class LiveMapViewModel: ObservableObject {
                     coordinate: location.coordinate,
                     groupId: groupId
                 )
-                centerOnUserIfNeeded(location.coordinate)
             }
 
             let sync = try await api.fetchLocationSync(exceptUserId: userId, groupId: groupId)
@@ -381,6 +487,7 @@ final class LiveMapViewModel: ObservableObject {
             footprintSteps = footprintTrail.steps
 
             handleCampusEntries(sync.campusEntries)
+            await pollChatInbox()
         } catch {
             isConnected = false
             connectionError = error.localizedDescription
@@ -456,5 +563,59 @@ final class LiveMapViewModel: ObservableObject {
             guard !Task.isCancelled else { return }
             self?.campusEntryBanner = nil
         }
+    }
+
+    private func pollChatInbox() async {
+        guard !groupId.isEmpty else { return }
+        do {
+            let inbox = try await api.fetchMessageInbox(groupId: groupId, userId: userId)
+            handleChatInbox(inbox)
+        } catch {
+            // 채팅 알림 실패는 지도 동기화를 막지 않음
+        }
+    }
+
+    private func handleChatInbox(_ inbox: [ChatInboxMessage]) {
+        if !hasSeededChatInbox {
+            for message in inbox {
+                seenChatMessageIds.insert(message.messageId)
+            }
+            hasSeededChatInbox = true
+            return
+        }
+
+        let newMessages = inbox.filter { !seenChatMessageIds.contains($0.messageId) }
+        for message in newMessages {
+            seenChatMessageIds.insert(message.messageId)
+        }
+
+        guard let newest = newMessages.sorted(by: { $0.sentAt > $1.sentAt }).first else { return }
+        if activeChatDestination?.peerUserId == newest.fromUserId { return }
+
+        chatNotificationBanner = ChatNotificationBanner(
+            messageId: newest.messageId,
+            peerUserId: newest.fromUserId,
+            peerName: newest.fromName,
+            previewText: newest.text
+        )
+        chatBannerTask?.cancel()
+        chatBannerTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                if self.chatNotificationBanner?.messageId == newest.messageId {
+                    self.chatNotificationBanner = nil
+                }
+            }
+        }
+    }
+
+    private func resetChatNotificationState() {
+        chatNotificationBanner = nil
+        chatBannerTask?.cancel()
+        chatBannerTask = nil
+        seenChatMessageIds = []
+        hasSeededChatInbox = false
     }
 }

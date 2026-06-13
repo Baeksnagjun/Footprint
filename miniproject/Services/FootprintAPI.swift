@@ -1,6 +1,6 @@
 //
 //  FootprintAPI.swift
-//  miniproject
+//  Footprint
 //
 
 import CoreLocation
@@ -155,6 +155,52 @@ struct GroupMemberDisplay: Identifiable, Equatable {
     }
 }
 
+struct ChatMessage: Identifiable, Codable, Equatable {
+    let messageId: String
+    let fromUserId: String
+    let toUserId: String
+    let text: String
+    let sentAt: Double
+
+    var id: String { messageId }
+
+    enum CodingKeys: String, CodingKey {
+        case messageId = "message_id"
+        case fromUserId = "from_user_id"
+        case toUserId = "to_user_id"
+        case text
+        case sentAt = "sent_at"
+    }
+}
+
+struct MessagesResponse: Codable {
+    let messages: [ChatMessage]
+}
+
+struct ChatInboxMessage: Identifiable, Codable, Equatable {
+    let messageId: String
+    let fromUserId: String
+    let toUserId: String
+    let text: String
+    let sentAt: Double
+    let fromName: String
+
+    var id: String { messageId }
+
+    enum CodingKeys: String, CodingKey {
+        case messageId = "message_id"
+        case fromUserId = "from_user_id"
+        case toUserId = "to_user_id"
+        case text
+        case sentAt = "sent_at"
+        case fromName = "from_name"
+    }
+}
+
+struct ChatInboxResponse: Codable {
+    let messages: [ChatInboxMessage]
+}
+
 enum FootprintAPIError: LocalizedError {
     case invalidURL
     case badResponse(Int)
@@ -303,6 +349,84 @@ struct FootprintAPI {
         return decoded
     }
 
+    func sendMessage(
+        groupId: String,
+        fromUserId: String,
+        toUserId: String,
+        text: String
+    ) async throws -> ChatMessage {
+        let url = baseURL.appending(path: "groups/\(groupId)/messages")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "from_user_id": fromUserId,
+            "to_user_id": toUserId,
+            "text": text,
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await performRequest(request)
+        try validateResponse(data: data, response: response)
+        guard let decoded = try? JSONDecoder().decode(ChatMessage.self, from: data) else {
+            throw FootprintAPIError.decodingFailed
+        }
+        return decoded
+    }
+
+    func fetchMessages(
+        groupId: String,
+        userId: String,
+        withUserId: String,
+        since: Double? = nil
+    ) async throws -> [ChatMessage] {
+        var components = URLComponents(
+            url: baseURL.appending(path: "groups/\(groupId)/messages"),
+            resolvingAgainstBaseURL: false
+        )
+        var items = [
+            URLQueryItem(name: "user_id", value: userId),
+            URLQueryItem(name: "with_user", value: withUserId),
+        ]
+        if let since {
+            items.append(URLQueryItem(name: "since", value: String(since)))
+        }
+        components?.queryItems = items
+        guard let url = components?.url else { throw FootprintAPIError.invalidURL }
+
+        var request = URLRequest(url: url)
+        let (data, response) = try await performRequest(request)
+        try validateResponse(data: data, response: response)
+        guard let decoded = try? JSONDecoder().decode(MessagesResponse.self, from: data) else {
+            throw FootprintAPIError.decodingFailed
+        }
+        return decoded.messages
+    }
+
+    func fetchMessageInbox(
+        groupId: String,
+        userId: String,
+        since: Double? = nil
+    ) async throws -> [ChatInboxMessage] {
+        var components = URLComponents(
+            url: baseURL.appending(path: "groups/\(groupId)/messages/inbox"),
+            resolvingAgainstBaseURL: false
+        )
+        var items = [URLQueryItem(name: "user_id", value: userId)]
+        if let since {
+            items.append(URLQueryItem(name: "since", value: String(since)))
+        }
+        components?.queryItems = items
+        guard let url = components?.url else { throw FootprintAPIError.invalidURL }
+
+        var request = URLRequest(url: url)
+        let (data, response) = try await performRequest(request)
+        try validateResponse(data: data, response: response)
+        guard let decoded = try? JSONDecoder().decode(ChatInboxResponse.self, from: data) else {
+            throw FootprintAPIError.decodingFailed
+        }
+        return decoded.messages
+    }
+
     func fetchLocationSync(exceptUserId: String, groupId: String) async throws -> LocationSyncResponse {
         guard !groupId.isEmpty else {
             return LocationSyncResponse(peers: [], campusEntries: [], members: [])
@@ -333,6 +457,11 @@ struct FootprintAPI {
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let detail = json["detail"] {
                 if let message = detail as? String {
+                    if http.statusCode == 404 && message == "Not Found" {
+                        throw FootprintAPIError.serverMessage(
+                            "채팅 API를 찾을 수 없습니다. 맥에서 backend/start-server.sh 로 서버를 재시작해주세요."
+                        )
+                    }
                     throw FootprintAPIError.serverMessage(message)
                 }
                 if let items = detail as? [[String: Any]] {
@@ -383,25 +512,19 @@ enum FootprintConfig {
     // 한성대학교 상상관 (사용자 지정 WGS84)
     static let campusCenter = CLLocationCoordinate2D(latitude: 37.58261, longitude: 127.01054)
 
-    /// 한성대 캠퍼스 주변만 보이도록 하는 지도 범위 (약 600×650m)
-    static var campusBoundaryRegion: MKCoordinateRegion {
-        MKCoordinateRegion(
-            center: campusCenter,
-            span: MKCoordinateSpan(latitudeDelta: 0.0055, longitudeDelta: 0.0065)
-        )
-    }
+    /// 캠퍼스 원형 경계 반경 (기존 사각형과 비슷한 크기, 약 330m)
+    static let campusRadiusMeters: CLLocationDistance = 330
 
-    static var campusBoundaryCorners: [CLLocationCoordinate2D] {
-        let region = campusBoundaryRegion
-        let halfLat = region.span.latitudeDelta / 2
-        let halfLng = region.span.longitudeDelta / 2
-        let c = region.center
-        return [
-            CLLocationCoordinate2D(latitude: c.latitude + halfLat, longitude: c.longitude - halfLng),
-            CLLocationCoordinate2D(latitude: c.latitude + halfLat, longitude: c.longitude + halfLng),
-            CLLocationCoordinate2D(latitude: c.latitude - halfLat, longitude: c.longitude + halfLng),
-            CLLocationCoordinate2D(latitude: c.latitude - halfLat, longitude: c.longitude - halfLng),
-        ]
+    /// 한성대 캠퍼스 주변만 보이도록 하는 지도 범위
+    static var campusBoundaryRegion: MKCoordinateRegion {
+        let metersPerDegreeLat = 111_320.0
+        let metersPerDegreeLng = 111_320.0 * cos(campusCenter.latitude * .pi / 180)
+        let latDelta = (campusRadiusMeters * 2) / metersPerDegreeLat
+        let lngDelta = (campusRadiusMeters * 2) / metersPerDegreeLng
+        return MKCoordinateRegion(
+            center: campusCenter,
+            span: MKCoordinateSpan(latitudeDelta: latDelta, longitudeDelta: lngDelta)
+        )
     }
 
     static func clampedMapRegion(_ region: MKCoordinateRegion) -> MKCoordinateRegion {

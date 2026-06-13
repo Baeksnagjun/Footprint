@@ -1,6 +1,6 @@
 //
 //  FootprintGroupManageSheet.swift
-//  miniproject
+//  Footprint
 //
 
 import SwiftUI
@@ -9,6 +9,7 @@ private enum GroupSheetRoute: Hashable {
     case create
     case join
     case detail(String)
+    case chat(groupId: String, peerUserId: String, peerName: String)
 }
 
 struct FootprintGroupManageSheet: View {
@@ -69,6 +70,13 @@ struct FootprintGroupManageSheet: View {
                     GroupJoinView(viewModel: viewModel, path: $path)
                 case .detail(let groupId):
                     GroupDetailView(viewModel: viewModel, groupId: groupId, path: $path)
+                case .chat(let groupId, let peerUserId, let peerName):
+                    FootprintGroupChatView(
+                        viewModel: viewModel,
+                        groupId: groupId,
+                        peerUserId: peerUserId,
+                        peerName: peerName
+                    )
                 }
             }
         }
@@ -409,22 +417,22 @@ private struct GroupDetailView: View {
                     ScrollView {
                         VStack(spacing: 10) {
                             ForEach(members) { member in
-                                HStack(spacing: 12) {
-                                    Circle()
-                                        .fill(FootprintTheme.neonCyan.opacity(0.15))
-                                        .frame(width: 40, height: 40)
-                                        .overlay {
-                                            Text(String(member.name.prefix(1)))
-                                                .font(.subheadline.bold())
-                                                .foregroundStyle(FootprintTheme.neonCyanDeep)
-                                        }
-                                    Text(member.userId == viewModel.userId ? "\(member.name) (나)" : member.name)
-                                        .font(.body.weight(.medium))
-                                        .foregroundStyle(FootprintTheme.textPrimary)
-                                    Spacer()
+                                if member.userId == viewModel.userId {
+                                    memberRow(member, showsChatHint: false)
+                                } else {
+                                    Button {
+                                        path.append(
+                                            GroupSheetRoute.chat(
+                                                groupId: groupId,
+                                                peerUserId: member.userId,
+                                                peerName: member.name
+                                            )
+                                        )
+                                    } label: {
+                                        memberRow(member, showsChatHint: true)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .padding(14)
-                                .footprintCard(cornerRadius: 14)
                             }
                         }
                     }
@@ -457,6 +465,41 @@ private struct GroupDetailView: View {
         .navigationTitle("그룹 상세")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadDetail() }
+    }
+
+    private func memberRow(_ member: GroupMember, showsChatHint: Bool) -> some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(FootprintTheme.neonCyan.opacity(0.15))
+                .frame(width: 40, height: 40)
+                .overlay {
+                    Text(String(member.name.prefix(1)))
+                        .font(.subheadline.bold())
+                        .foregroundStyle(FootprintTheme.neonCyanDeep)
+                }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(member.userId == viewModel.userId ? "\(member.name) (나)" : member.name)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(FootprintTheme.textPrimary)
+                if showsChatHint {
+                    Text("탭해서 채팅하기")
+                        .font(.caption2)
+                        .foregroundStyle(FootprintTheme.textMuted)
+                }
+            }
+            Spacer()
+            if showsChatHint {
+                Image(systemName: "bubble.left.fill")
+                    .font(.caption)
+                    .foregroundStyle(FootprintTheme.neonCyanDeep)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(FootprintTheme.textMuted)
+            }
+        }
+        .padding(14)
+        .footprintCard(cornerRadius: 14)
+        .contentShape(Rectangle())
     }
 
     private var inviteCodeCard: some View {

@@ -1,6 +1,6 @@
 //
 //  LocationSimulationSheet.swift
-//  miniproject
+//  Footprint
 //
 
 import CoreLocation

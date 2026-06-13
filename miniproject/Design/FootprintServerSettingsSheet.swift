@@ -1,6 +1,6 @@
 //
 //  FootprintServerSettingsSheet.swift
-//  miniproject
+//  Footprint
 //
 
 import SwiftUI

@@ -1,6 +1,6 @@
 //
 //  FootprintGroupStore.swift
-//  miniproject
+//  Footprint
 //
 
 import Foundation

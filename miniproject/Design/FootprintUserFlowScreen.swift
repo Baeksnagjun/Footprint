@@ -1,6 +1,6 @@
 //
 //  FootprintUserFlowScreen.swift
-//  miniproject
+//  Footprint
 //
 
 import SwiftUI

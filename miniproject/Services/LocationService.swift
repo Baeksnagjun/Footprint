@@ -1,6 +1,6 @@
 //
 //  LocationService.swift
-//  miniproject
+//  Footprint
 //
 
 import Combine

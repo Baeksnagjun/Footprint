@@ -1,6 +1,6 @@
 //
 //  FootprintSession.swift
-//  miniproject
+//  Footprint
 //
 
 import Foundation

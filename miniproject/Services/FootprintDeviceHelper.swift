@@ -1,6 +1,6 @@
 //
 //  FootprintDeviceHelper.swift
-//  miniproject
+//  Footprint
 //
 
 import Foundation

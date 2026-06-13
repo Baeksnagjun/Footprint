@@ -1,6 +1,6 @@
 //
 //  FootprintServerResolver.swift
-//  miniproject
+//  Footprint
 //
 
 import Foundation

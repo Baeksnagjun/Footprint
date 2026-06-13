@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 import string
 import time
@@ -10,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
-app = FastAPI(title="Footprint API", version="0.3.0")
+app = FastAPI(title="Footprint API", version="0.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,13 +24,14 @@ app.add_middleware(
 # 한성대학교 캠퍼스 (iOS FootprintConfig 와 동일)
 CAMPUS_CENTER_LAT = 37.58261
 CAMPUS_CENTER_LNG = 127.01054
-CAMPUS_LAT_HALF = 0.0055 / 2
-CAMPUS_LNG_HALF = 0.0065 / 2
+CAMPUS_RADIUS_METERS = 330
 
 locations: Dict[str, dict] = {}
 campus_entry_events: List[dict] = []
 groups: Dict[str, dict] = {}
 invite_codes: Dict[str, str] = {}
+messages: Dict[str, List[dict]] = {}
+MAX_MESSAGES_PER_THREAD = 200
 
 
 class LocationUpdate(BaseModel):
@@ -70,11 +72,16 @@ class InviteRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=64)
 
 
+class SendMessageRequest(BaseModel):
+    from_user_id: str = Field(min_length=1, max_length=64)
+    to_user_id: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=500)
+
+
 def is_on_campus(lat: float, lng: float) -> bool:
-    return (
-        CAMPUS_CENTER_LAT - CAMPUS_LAT_HALF <= lat <= CAMPUS_CENTER_LAT + CAMPUS_LAT_HALF
-        and CAMPUS_CENTER_LNG - CAMPUS_LNG_HALF <= lng <= CAMPUS_CENTER_LNG + CAMPUS_LNG_HALF
-    )
+    dlat = (lat - CAMPUS_CENTER_LAT) * 111_320
+    dlng = (lng - CAMPUS_CENTER_LNG) * 111_320 * math.cos(math.radians(CAMPUS_CENTER_LAT))
+    return math.hypot(dlat, dlng) <= CAMPUS_RADIUS_METERS
 
 
 def generate_invite_code() -> str:
@@ -165,11 +172,27 @@ def members_payload(group_id: str) -> List[dict]:
     return list(group["members"].values())
 
 
+def thread_id(group_id: str, user_a: str, user_b: str) -> str:
+    a, b = sorted([user_a, user_b])
+    return f"{group_id}:{a}:{b}"
+
+
+def message_payload(message: dict) -> dict:
+    return {
+        "message_id": message["message_id"],
+        "from_user_id": message["from_user_id"],
+        "to_user_id": message["to_user_id"],
+        "text": message["text"],
+        "sent_at": message["sent_at"],
+    }
+
+
 @app.get("/health")
 def health() -> dict:
     on_campus = sum(1 for data in locations.values() if data.get("is_on_campus"))
     return {
         "status": "ok",
+        "api_version": "0.4.0",
         "users_online": len(locations),
         "on_campus": on_campus,
         "groups": len(groups),
@@ -234,6 +257,75 @@ def join_group(payload: JoinGroupRequest) -> dict:
 @app.get("/groups/{group_id}/members")
 def get_group_members(group_id: str) -> dict:
     return {"members": members_payload(group_id)}
+
+
+@app.post("/groups/{group_id}/messages")
+def send_message(group_id: str, payload: SendMessageRequest) -> dict:
+    ensure_member(group_id, payload.from_user_id)
+    ensure_member(group_id, payload.to_user_id)
+    if payload.from_user_id == payload.to_user_id:
+        raise HTTPException(status_code=400, detail="자신에게는 메시지를 보낼 수 없습니다.")
+
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="메시지를 입력해주세요.")
+
+    tid = thread_id(group_id, payload.from_user_id, payload.to_user_id)
+    message = {
+        "message_id": str(uuid.uuid4()),
+        "from_user_id": payload.from_user_id,
+        "to_user_id": payload.to_user_id,
+        "text": text,
+        "sent_at": time.time(),
+    }
+    thread = messages.setdefault(tid, [])
+    thread.append(message)
+    if len(thread) > MAX_MESSAGES_PER_THREAD:
+        messages[tid] = thread[-MAX_MESSAGES_PER_THREAD:]
+    return message_payload(message)
+
+
+@app.get("/groups/{group_id}/messages")
+def get_messages(
+    group_id: str,
+    user_id: str = Query(..., min_length=1, max_length=64),
+    with_user: str = Query(..., min_length=1, max_length=64),
+    since: Optional[float] = Query(default=None),
+) -> dict:
+    ensure_member(group_id, user_id)
+    ensure_member(group_id, with_user)
+    tid = thread_id(group_id, user_id, with_user)
+    thread = messages.get(tid, [])
+    if since is not None:
+        thread = [item for item in thread if item["sent_at"] > since]
+    return {"messages": [message_payload(item) for item in thread]}
+
+
+@app.get("/groups/{group_id}/messages/inbox")
+def get_message_inbox(
+    group_id: str,
+    user_id: str = Query(..., min_length=1, max_length=64),
+    since: Optional[float] = Query(default=None),
+) -> dict:
+    ensure_member(group_id, user_id)
+    group = get_group(group_id)
+    members = group.get("members", {})
+    prefix = f"{group_id}:"
+    results = []
+    for tid, thread in messages.items():
+        if not tid.startswith(prefix):
+            continue
+        for item in thread:
+            if item["to_user_id"] != user_id:
+                continue
+            if since is not None and item["sent_at"] <= since:
+                continue
+            sender = members.get(item["from_user_id"], {})
+            payload = message_payload(item)
+            payload["from_name"] = sender.get("name", item["from_user_id"])
+            results.append(payload)
+    results.sort(key=lambda item: item["sent_at"])
+    return {"messages": results}
 
 
 @app.post("/location")

@@ -1,6 +1,6 @@
 //
 //  SceneDelegate.swift
-//  miniproject
+//  Footprint
 //
 //  Created by 백상준 on 5/20/26.
 //

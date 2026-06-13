@@ -1,6 +1,6 @@
 //
 //  FootprintMapScreen.swift
-//  miniproject
+//  Footprint
 //
 
 import SwiftUI
@@ -72,10 +72,10 @@ struct FootprintMapCampusScreen: View {
     }
 
     private var campusBoundaryOverlay: some View {
-        RoundedRectangle(cornerRadius: 120, style: .continuous)
+        Circle()
             .stroke(FootprintTheme.campusBoundary, lineWidth: 2)
             .background(FootprintTheme.neonCyan.opacity(0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 120, style: .continuous))
+            .clipShape(Circle())
             .padding(36)
             .padding(.top, 80)
     }

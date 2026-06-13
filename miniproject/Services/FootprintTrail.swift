@@ -1,6 +1,6 @@
 //
 //  FootprintTrail.swift
-//  miniproject
+//  Footprint
 //
 
 import CoreLocation

@@ -1,6 +1,6 @@
 //
 //  FootprintShowcaseView.swift
-//  miniproject
+//  Footprint
 //
 
 import SwiftUI

@@ -1,6 +1,6 @@
 //
 //  FootprintLiveMapView.swift
-//  miniproject
+//  Footprint
 //
 
 import MapKit
@@ -32,40 +32,20 @@ struct FootprintLiveMapView: View {
 
     var body: some View {
         ZStack {
-            Map(position: $viewModel.cameraPosition) {
-                MapPolygon(coordinates: FootprintConfig.campusBoundaryCorners)
-                    .foregroundStyle(FootprintTheme.neonCyan.opacity(0.06))
-                    .stroke(FootprintTheme.neonCyan.opacity(0.45), lineWidth: 2)
-                ForEach(viewModel.footprintSteps) { step in
-                    Annotation("", coordinate: step.coordinate) {
-                        footprintIcon(step: step)
-                    }
-                }
-                if viewModel.locationService.isSimulating,
-                   let simulated = viewModel.locationService.currentLocation {
-                    Annotation("나", coordinate: simulated.coordinate) {
-                        simulatedUserMarker
-                    }
-                } else {
-                    UserAnnotation()
-                }
-                ForEach(viewModel.onCampusPeers) { peer in
-                    Annotation(peer.name, coordinate: peer.coordinate) {
-                        mapMarker(
-                            name: peer.name,
-                            initial: String(peer.name.prefix(1)),
-                            inactive: false
-                        )
+            MapReader { proxy in
+                GeometryReader { geo in
+                    ZStack {
+                        mapContent(proxy: proxy, viewportSize: geo.size)
+                        CampusCircleOutsideMask(proxy: proxy, revision: viewModel.mapCameraRevision)
                     }
                 }
             }
-            .mapStyle(.standard(elevation: .flat, emphasis: .automatic))
-            .onMapCameraChange(frequency: .continuous) { context in
-                viewModel.applyCameraRegion(context.region, heading: context.camera.heading)
-            }
-            .ignoresSafeArea()
 
             VStack {
+                if let chatBanner = viewModel.chatNotificationBanner {
+                    chatNotificationBannerView(chatBanner)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
                 if let banner = viewModel.campusEntryBanner {
                     campusEntryBannerView(banner)
                         .transition(.move(edge: .top).combined(with: .opacity))
@@ -94,6 +74,25 @@ struct FootprintLiveMapView: View {
         .sheet(isPresented: $showGroupManage) {
             FootprintGroupManageSheet(viewModel: viewModel)
         }
+        .sheet(item: $viewModel.activeChatDestination) { destination in
+            NavigationStack {
+                FootprintGroupChatView(
+                    viewModel: viewModel,
+                    groupId: destination.groupId,
+                    peerUserId: destination.peerUserId,
+                    peerName: destination.peerName
+                )
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("닫기") {
+                            viewModel.closeActiveChat()
+                        }
+                        .foregroundStyle(FootprintTheme.neonCyanDeep)
+                    }
+                }
+            }
+            .preferredColorScheme(.light)
+        }
         .sheet(isPresented: $showServerSettings) {
             FootprintServerSettingsSheet(
                 initialURL: viewModel.serverURL,
@@ -101,7 +100,98 @@ struct FootprintLiveMapView: View {
             )
         }
         .animation(.easeInOut(duration: 0.25), value: viewModel.campusEntryBanner)
+        .animation(.easeInOut(duration: 0.25), value: viewModel.chatNotificationBanner)
         .preferredColorScheme(.light)
+    }
+
+    private func mapContent(proxy: MapProxy, viewportSize: CGSize) -> some View {
+        Map(position: $viewModel.cameraPosition, interactionModes: viewModel.mapInteractionModes) {
+            MapCircle(center: FootprintConfig.campusCenter, radius: FootprintConfig.campusRadiusMeters)
+                .foregroundStyle(FootprintTheme.neonCyan.opacity(0.06))
+                .stroke(FootprintTheme.neonCyan.opacity(0.45), lineWidth: 2)
+            ForEach(viewModel.footprintSteps) { step in
+                Annotation("", coordinate: step.coordinate) {
+                    footprintIcon(step: step)
+                }
+            }
+            if viewModel.locationService.isSimulating,
+               let simulated = viewModel.locationService.currentLocation {
+                Annotation("나", coordinate: simulated.coordinate) {
+                    simulatedUserMarker
+                }
+            } else if let location = viewModel.locationService.currentLocation {
+                Annotation("나", coordinate: location.coordinate) {
+                    simulatedUserMarker
+                }
+            }
+            ForEach(viewModel.onCampusPeers) { peer in
+                Annotation(peer.name, coordinate: peer.coordinate) {
+                    Button {
+                        viewModel.openChat(peerUserId: peer.userId, peerName: peer.name)
+                    } label: {
+                        mapMarker(
+                            name: peer.name,
+                            initial: String(peer.name.prefix(1)),
+                            inactive: false
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .mapStyle(.standard(elevation: .flat, emphasis: .automatic))
+        .onMapCameraChange(frequency: .continuous) { context in
+            viewModel.trackMapCamera(heading: context.camera.heading, region: context.region)
+        }
+        .onMapCameraChange(frequency: .onEnd) { context in
+            viewModel.lockCampusMapView(
+                context.region,
+                viewportSize: viewportSize,
+                proxy: proxy
+            )
+        }
+        .onAppear {
+            viewModel.lockCampusMapView(
+                FootprintConfig.campusBoundaryRegion,
+                viewportSize: viewportSize,
+                proxy: proxy
+            )
+        }
+        .ignoresSafeArea()
+    }
+
+    private func chatNotificationBannerView(_ banner: ChatNotificationBanner) -> some View {
+        Button {
+            viewModel.openChatFromNotification()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "message.fill")
+                    .foregroundStyle(FootprintTheme.neonCyanDeep)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(banner.peerName)님의 메시지")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(FootprintTheme.textMuted)
+                    Text(banner.previewText)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(FootprintTheme.textPrimary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(FootprintTheme.neonCyanDeep)
+            }
+            .padding(14)
+            .footprintCard(cornerRadius: 14)
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(FootprintTheme.neonCyan.opacity(0.35), lineWidth: 1.5)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(banner.peerName)님의 새 메시지, 탭해서 채팅 열기")
     }
 
     private func campusEntryBannerView(_ message: String) -> some View {
@@ -234,7 +324,7 @@ struct FootprintLiveMapView: View {
                 )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("내 위치로 이동")
+        .accessibilityLabel("캠퍼스 전체 보기")
     }
 
     private var peerListCard: some View {
@@ -350,5 +440,30 @@ struct FootprintLiveMapView: View {
                     .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
             }
         }
+    }
+}
+
+private struct CampusCircleOutsideMask: View {
+    let proxy: MapProxy
+    let revision: Int
+
+    var body: some View {
+        GeometryReader { _ in
+            if let metrics = CampusCircleScreenGeometry.screenMetrics(proxy: proxy) {
+                Canvas { context, size in
+                    var path = Path(CGRect(origin: .zero, size: size))
+                    path.addEllipse(in: CGRect(
+                        x: metrics.center.x - metrics.radius,
+                        y: metrics.center.y - metrics.radius,
+                        width: metrics.radius * 2,
+                        height: metrics.radius * 2
+                    ))
+                    context.fill(path, with: .color(FootprintTheme.background), style: FillStyle(eoFill: true))
+                }
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .id(revision)
     }
 }

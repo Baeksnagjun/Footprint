@@ -1,6 +1,6 @@
 //
 //  FootprintTheme.swift
-//  miniproject
+//  Footprint
 //
 
 import SwiftUI

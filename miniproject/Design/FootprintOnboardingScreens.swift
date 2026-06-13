@@ -1,6 +1,6 @@
 //
 //  FootprintOnboardingScreens.swift
-//  miniproject
+//  Footprint
 //
 
 import SwiftUI
@@ -42,7 +42,7 @@ struct FootprintSplashScreen: View {
                 VStack(spacing: 12) {
                     Button("시작하기", action: onContinue)
                         .buttonStyle(FootprintPrimaryButtonStyle())
-                    Text("학교·그룹 선택 후 지도에서 발자국을 공유합니다")
+                    Text("학교 선택 후 지도에서 발자국을 공유합니다")
                         .font(.caption)
                         .foregroundStyle(FootprintTheme.textMuted)
                         .multilineTextAlignment(.center)
@@ -126,11 +126,25 @@ struct FootprintUniversitySelectScreen: View {
     @State private var query = ""
     var onSelect: (String) -> Void = { _ in }
 
-    private let schools = [
-        (FootprintConfig.universityName, "서울 성북구 · 상상관"),
+    private let schools: [(String, String)] = [
+        (FootprintConfig.universityName, "서울 성북구"),
         ("서울대학교", "서울 관악구"),
         ("연세대학교", "서울 서대문구"),
         ("고려대학교", "서울 성북구"),
+        ("성균관대학교", "서울 종로구"),
+        ("한양대학교", "서울 성동구"),
+        ("중앙대학교", "서울 동작구"),
+        ("경희대학교", "서울 동대문구"),
+        ("서강대학교", "서울 마포구"),
+        ("이화여자대학교", "서울 서대문구"),
+        ("건국대학교", "서울 광진구"),
+        ("동국대학교", "서울 중구"),
+        ("국민대학교", "서울 성북구"),
+        ("숭실대학교", "서울 동작구"),
+        ("아주대학교", "경기 수원시"),
+        ("인하대학교", "인천 미추홀구"),
+        ("부산대학교", "부산 금정구"),
+        ("전남대학교", "광주 북구"),
     ]
 
     var body: some View {
@@ -151,29 +165,14 @@ struct FootprintUniversitySelectScreen: View {
 
                 ScrollView {
                     VStack(spacing: 10) {
-                        ForEach(filteredSchools, id: \.0) { school in
-                            Button {
-                                onSelect(school.0)
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(school.0)
-                                            .font(.body.weight(.semibold))
-                                            .foregroundStyle(FootprintTheme.textPrimary)
-                                        Text(school.1)
-                                            .font(.caption)
-                                            .foregroundStyle(FootprintTheme.textMuted)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(FootprintTheme.textMuted)
-                                }
-                                .padding(16)
-                                .background(FootprintTheme.surface)
-                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        if trimmedQuery.isEmpty {
+                            searchPrompt
+                        } else if filteredSchools.isEmpty {
+                            emptyResult
+                        } else {
+                            ForEach(filteredSchools, id: \.0) { school in
+                                schoolRow(school)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -183,9 +182,67 @@ struct FootprintUniversitySelectScreen: View {
         .preferredColorScheme(.light)
     }
 
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var searchPrompt: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.title2)
+                .foregroundStyle(FootprintTheme.textMuted)
+            Text("학교 이름을 검색해 주세요")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(FootprintTheme.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 48)
+    }
+
+    private var emptyResult: some View {
+        VStack(spacing: 8) {
+            Text("검색 결과가 없어요")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(FootprintTheme.textSecondary)
+            Text("다른 키워드로 다시 검색해 보세요")
+                .font(.caption)
+                .foregroundStyle(FootprintTheme.textMuted)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 48)
+    }
+
+    private func schoolRow(_ school: (String, String)) -> some View {
+        Button {
+            onSelect(school.0)
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(school.0)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(FootprintTheme.textPrimary)
+                    Text(school.1)
+                        .font(.caption)
+                        .foregroundStyle(FootprintTheme.textMuted)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(FootprintTheme.textMuted)
+            }
+            .padding(16)
+            .background(FootprintTheme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
     private var filteredSchools: [(String, String)] {
-        guard !query.isEmpty else { return schools }
-        return schools.filter { $0.0.localizedCaseInsensitiveContains(query) }
+        guard !trimmedQuery.isEmpty else { return [] }
+        return schools.filter { school in
+            school.0.localizedCaseInsensitiveContains(trimmedQuery)
+                || school.1.localizedCaseInsensitiveContains(trimmedQuery)
+        }
     }
 }
 
