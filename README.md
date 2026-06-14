@@ -110,9 +110,8 @@ Footprint/
 
 ### 2.7 발표 영상
 
-> YouTube 링크를 아래에 추가해 주세요.
 
-[![Footprint 발표 영상](https://img.youtube.com/vi/VIDEO_ID/0.jpg)](https://www.youtube.com/watch?v=VIDEO_ID)
+https://youtu.be/yjYrc5LWyoM
 
 ---
 
